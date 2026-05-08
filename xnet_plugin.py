@@ -348,7 +348,7 @@ class XnetDialog(wx.Frame):
         wx.Frame.__init__(
             self, parent,
             title="Xnet - 差分等长分析",
-            size=(1060, 600),
+            size=(1000, 600),
             style=wx.DEFAULT_FRAME_STYLE | wx.FRAME_FLOAT_ON_PARENT,
         )
         self.analyzer = XnetAnalyzer(board)
@@ -382,7 +382,7 @@ class XnetDialog(wx.Frame):
         self.cols = [
             ("差分分组",  120),
             ("侧别",      40),
-            ("网络",      200),
+            ("网络",      140),
             ("P(mm)",     80),
             ("N(mm)",     80),
             ("差值(mm)",  80),
@@ -472,20 +472,13 @@ class XnetDialog(wx.Frame):
             diff_str = f"{r['diff_mm']:.3f}"
             status = r['status']
 
-            # P 侧各列统计
-            res_p_eq = sum(float(v.split('(')[1].replace('mm)', '')) for v in r['res_p_str'].replace(' ','').split(',') if '(' in v) if r['res_p_str'] != '无' else 0
-            # 用 sum of resistors in p_chain
-            p_res_eq = 0
-            if 'res_eq_p' in r:
-                p_res_eq = r['res_eq_p']
-
             p_net = r['net_p']
             n_net = r['net_n']
 
             # --- P 行 ---
             g.SetCellValue(row_p, 0, r['pair_name'])
             g.SetCellValue(row_p, 1, 'P')
-            g.SetCellValue(row_p, 2, f'{p_net} / {n_net}')
+            g.SetCellValue(row_p, 2, p_net)
             g.SetCellValue(row_p, 3, f"{r['len_p_mm']:.3f}")
             g.SetCellValue(row_p, 4, f"{r['len_n_mm']:.3f}")
             g.SetCellValue(row_p, 5, diff_str)
@@ -496,7 +489,7 @@ class XnetDialog(wx.Frame):
             # --- N 行 ---
             g.SetCellValue(row_n, 0, '')
             g.SetCellValue(row_n, 1, 'N')
-            g.SetCellValue(row_n, 2, f'{n_net} / {p_net}')
+            g.SetCellValue(row_n, 2, n_net)
             g.SetCellValue(row_n, 3, f"{r['len_p_mm']:.3f}")
             g.SetCellValue(row_n, 4, f"{r['len_n_mm']:.3f}")
             g.SetCellValue(row_n, 5, diff_str)
