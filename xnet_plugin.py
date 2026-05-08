@@ -9,7 +9,7 @@ import os
 import re
 import wx
 import wx.grid
-from pcbnew import ActionPlugin, GetBoard, PCB_IU_PER_MM
+from pcbnew import ActionPlugin, GetBoard, GetUserUnits, PCB_IU_PER_MM, EDA_UNITS_MM, EDA_UNITS_MILS, EDA_UNITS_INCH
 import math
 
 DEFAULT_RESISTOR_EQ_MM = 0.8  # 未知封装默认的焊盘中心距
@@ -136,10 +136,9 @@ class XnetResistor:
         self.value = value
         self.eq_len_mm = eq_len_mm  # 两焊盘中心距
 
-    @property
-    def label(self):
+    def label(self, factor=1.0, unit='mm'):
         v = f'={self.value}' if self.value else ''
-        return f'{self.ref}{v}({self.eq_len_mm:.2f}mm)'
+        return f'{self.ref}{v}({self.eq_len_mm * factor:.2f}{unit})'
 
     def __repr__(self):
         return f'R({self.label})'
@@ -160,16 +159,14 @@ class XnetChain:
     def resistor_eq_len_mm(self):
         return sum(r.eq_len_mm for r in self.resistors)
 
-    @property
-    def detail_str(self):
+    def detail_str(self, factor=1.0, unit='mm'):
         """分段明细字符串，如 Seg1[ETH_TXP]=12.340mm → [R1=0.80] → Seg2[...]=5.678mm"""
         parts = []
-        # 按顺序交织分段和电阻
         n_res = len(self.resistors)
         for i, seg in enumerate(self.segments):
-            parts.append(f'Seg{i+1}[{seg.net_name}]={seg.length_mm:.3f}mm')
+            parts.append(f'Seg{i+1}[{seg.net_name}]={seg.length_mm * factor:.3f}{unit}')
             if i < n_res:
-                parts.append(f'[{self.resistors[i].ref}={self.resistors[i].eq_len_mm:.2f}mm]')
+                parts.append(f'[{self.resistors[i].ref}={self.resistors[i].eq_len_mm * factor:.2f}{unit}]')
         return ' → '.join(parts)
 
     def __repr__(self):
@@ -203,7 +200,7 @@ class XnetAnalyzer:
         results = []
         for base, p_name, n_name in diff_pairs:
             result = self._trace_xnet_chain(
-                board, net_items, resistor_map, base, p_name, n_name)
+                net_items, resistor_map, base, p_name, n_name)
             if result:
                 results.append(result)
 
@@ -260,7 +257,7 @@ class XnetAnalyzer:
 
         return pairs
 
-    def _trace_xnet_chain(self, board, net_items, resistor_map,
+    def _trace_xnet_chain(self, net_items, resistor_map,
                           pair_base, p_name, n_name):
         """追踪一条差分的 P 侧和 N 侧整条 Xnet 链。"""
         p_chain = self._trace_single_side(
@@ -275,9 +272,11 @@ class XnetAnalyzer:
         total_n = n_chain.total_len_mm if n_chain else 0
         diff_mm = total_p - total_n
 
-        # P/N 侧各自的电阻字符串
-        res_p_str = ', '.join(r.label for r in p_chain.resistors) if p_chain and p_chain.resistors else '无'
-        res_n_str = ', '.join(r.label for r in n_chain.resistors) if n_chain and n_chain.resistors else '无'
+        # 获取当前显示单位用于标签（电阻标签、分段明细中的单位）
+        _, unit_label, factor = _get_display_unit()
+
+        res_p_str = ', '.join(r.label(factor, unit_label) for r in p_chain.resistors) if p_chain and p_chain.resistors else '无'
+        res_n_str = ', '.join(r.label(factor, unit_label) for r in n_chain.resistors) if n_chain and n_chain.resistors else '无'
         res_eq_p = p_chain.resistor_eq_len_mm if p_chain else 0
         res_eq_n = n_chain.resistor_eq_len_mm if n_chain else 0
 
@@ -340,6 +339,21 @@ class XnetAnalyzer:
         return chain if chain.segments else None
 
 # ═══════════════════════════════════════════════════════════════════════
+#  单位工具
+# ═══════════════════════════════════════════════════════════════════════
+
+def _get_display_unit():
+    """获取 KiCad 当前显示单位。返回 (unit_enum, unit_label, mm_to_unit_factor)"""
+    u = GetUserUnits()
+    if u == EDA_UNITS_MILS:
+        return u, 'mil', 39.37007874
+    elif u == EDA_UNITS_INCH:
+        return u, 'in', 0.03937008
+    else:  # EDA_UNITS_MM or -1 (default)
+        return EDA_UNITS_MM, 'mm', 1.0
+
+
+# ═══════════════════════════════════════════════════════════════════════
 #  GUI
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -353,6 +367,7 @@ class XnetDialog(wx.Frame):
         )
         self.analyzer = XnetAnalyzer(board)
         self._last_result_hash = None
+        self._last_unit = None
         self._build_ui()
         self.CentreOnParent()
         self.Bind(wx.EVT_CLOSE, self._on_close)
@@ -378,16 +393,18 @@ class XnetDialog(wx.Frame):
         self.cb_auto.SetValue(True)
         self.st_status = wx.StaticText(self.toolbar, label="就绪")
 
+        _, unit_label, _ = _get_display_unit()
+
         self.grid = wx.grid.Grid(self)
         self.cols = [
             ("差分分组",  120),
             ("侧别",      40),
             ("网络",      140),
-            ("P(mm)",     80),
-            ("N(mm)",     80),
-            ("差值(mm)",  80),
+            (f"P({unit_label})",   80),
+            (f"N({unit_label})",   80),
+            (f"差值({unit_label})", 80),
             ("串联电阻",  200),
-            ("R 等效(mm)", 80),
+            (f"R 等效({unit_label})", 80),
             ("等长状态",  70),
         ]
         self.grid.CreateGrid(0, len(self.cols))
@@ -426,6 +443,13 @@ class XnetDialog(wx.Frame):
         try:
             new_board = GetBoard()
             self.analyzer.board = new_board
+
+            # 检测单位切换，更新列名
+            _, unit_label, _ = _get_display_unit()
+            if unit_label != self._last_unit:
+                self._last_unit = unit_label
+                self._update_column_labels(unit_label)
+
             self.st_status.SetLabel("分析中...")
             results = self.analyzer.analyze()
             if not self._board_modified_since_last_check(results):
@@ -433,16 +457,30 @@ class XnetDialog(wx.Frame):
             self._fill_grid(results)
             n = len(results)
             self.st_status.SetLabel(f"找到 {n} 个差分对")
+            _, unit_label, factor = _get_display_unit()
+            tol_good = TOLERANCE_GOOD * factor
+            tol_warn = TOLERANCE_WARNING * factor
             self.st_bottom.SetLabel(
                 f"共 {n} 个差分对({n*2}行)  |  "
-                f"绿 <{TOLERANCE_GOOD}mm  |  "
-                f"黄 {TOLERANCE_GOOD}~{TOLERANCE_WARNING}mm  |  "
-                f"红 >={TOLERANCE_WARNING}mm"
+                f"绿 <{tol_good:.1f}{unit_label}  |  "
+                f"黄 {tol_good:.1f}~{tol_warn:.1f}{unit_label}  |  "
+                f"红 >={tol_warn:.1f}{unit_label}"
             )
         except Exception as e:
             import traceback
             traceback.print_exc()
             self.st_status.SetLabel(f"错误: {e}")
+
+    def _update_column_labels(self, unit_label):
+        """单位切换时更新表头"""
+        labels = {
+            'P': 3,
+            'N': 4,
+            '差值': 5,
+            'R 等效': 7,
+        }
+        for name, col in labels.items():
+            self.grid.SetColLabelValue(col, f'{name}({unit_label})')
 
     def _fill_grid(self, results):
         g = self.grid
@@ -461,6 +499,8 @@ class XnetDialog(wx.Frame):
         BF = wx.Font(g.GetDefaultCellFont())
         BF.SetWeight(wx.FONTWEIGHT_BOLD)
 
+        _, unit_label, factor = _get_display_unit()
+
         for idx, r in enumerate(results):
             row_p = idx * 2
             row_n = row_p + 1
@@ -469,32 +509,38 @@ class XnetDialog(wx.Frame):
             bg = GREEN if diff_abs < TOLERANCE_GOOD else (
                 YELLOW if diff_abs < TOLERANCE_WARNING else RED)
 
-            diff_str = f"{r['diff_mm']:.3f}"
+            diff_val = r['diff_mm'] * factor
+            diff_str = f'{diff_val:.3f}'
             status = r['status']
 
             p_net = r['net_p']
             n_net = r['net_n']
 
+            p_len = f'{r["len_p_mm"] * factor:.3f}'
+            n_len = f'{r["len_n_mm"] * factor:.3f}'
+            res_eq_p_str = f'{r["res_eq_p"] * factor:.2f}' if r.get('res_eq_p') else ''
+            res_eq_n_str = f'{r["res_eq_n"] * factor:.2f}' if r.get('res_eq_n') else ''
+
             # --- P 行 ---
             g.SetCellValue(row_p, 0, r['pair_name'])
             g.SetCellValue(row_p, 1, 'P')
             g.SetCellValue(row_p, 2, p_net)
-            g.SetCellValue(row_p, 3, f"{r['len_p_mm']:.3f}")
-            g.SetCellValue(row_p, 4, f"{r['len_n_mm']:.3f}")
+            g.SetCellValue(row_p, 3, p_len)
+            g.SetCellValue(row_p, 4, n_len)
             g.SetCellValue(row_p, 5, diff_str)
             g.SetCellValue(row_p, 6, r['res_p_str'])
-            g.SetCellValue(row_p, 7, f"{r['res_eq_p']:.3f}" if r.get('res_eq_p') else '')
+            g.SetCellValue(row_p, 7, res_eq_p_str)
             g.SetCellValue(row_p, 8, status)
 
             # --- N 行 ---
             g.SetCellValue(row_n, 0, '')
             g.SetCellValue(row_n, 1, 'N')
             g.SetCellValue(row_n, 2, n_net)
-            g.SetCellValue(row_n, 3, f"{r['len_p_mm']:.3f}")
-            g.SetCellValue(row_n, 4, f"{r['len_n_mm']:.3f}")
+            g.SetCellValue(row_n, 3, p_len)
+            g.SetCellValue(row_n, 4, n_len)
             g.SetCellValue(row_n, 5, diff_str)
             g.SetCellValue(row_n, 6, r['res_n_str'])
-            g.SetCellValue(row_n, 7, f"{r['res_eq_n']:.3f}" if r.get('res_eq_n') else '')
+            g.SetCellValue(row_n, 7, res_eq_n_str)
             g.SetCellValue(row_n, 8, status)
 
             # 背景色
